@@ -1,421 +1,282 @@
-from flask import Flask, render_template, request, redirect, flash, send_file
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+import os
+from datetime import datetime, timedelta
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime, date
-import pandas as pd
-
-from models import db, User, Deposit, Meal, Market, ExtraCost, Notification
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'default_secret')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///mess.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-app.config["SECRET_KEY"] = "mess_secret_key"
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///database.db"
+db = SQLAlchemy(app)
 
-db.init_app(app)
+# ============================
+# MODELS
+# ============================
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50))
+    username = db.Column(db.String(50), unique=True)
+    password = db.Column(db.String(255))
+    role = db.Column(db.String(10))  # 'admin' or 'member'
 
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = "login"
+class Deposit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    amount = db.Column(db.Float)
+    date = db.Column(db.DateTime, default=datetime.utcnow)
 
+class Meal(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    date = db.Column(db.Date)
+    morning = db.Column(db.Float, default=0.2)
+    lunch = db.Column(db.Float, default=0.4)
+    dinner = db.Column(db.Float, default=0.4)
+    status = db.Column(db.String(10), default='on')  # on/off
 
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
+class Market(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # Market buyer
+    date = db.Column(db.Date)
+    item_list = db.Column(db.String(255))
+    total_cost = db.Column(db.Float)
+    approved = db.Column(db.Boolean, default=False)
 
+class Extra(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    category = db.Column(db.String(50))  # gas, bill, manager, other
+    amount = db.Column(db.Float)
+    date = db.Column(db.Date, default=datetime.utcnow)
 
-@app.before_first_request
-def create_super_admin():
-
-    admin = User.query.filter_by(username="shahadat").first()
-
-    if not admin:
-
-        new_admin = User(
+# ============================
+# Database Init (Deployment safe)
+# ============================
+def create_db():
+    db.create_all()
+    if not User.query.filter_by(username="Shahadat").first():
+        admin = User(
             name="Shahadat",
-            username="shahadat",
-            password=generate_password_hash("1234"),
-            role="super_admin"
+            username="Shahadat",
+            password=generate_password_hash("123456", method='sha256'),
+            role="admin"
         )
-
-        db.session.add(new_admin)
+        db.session.add(admin)
         db.session.commit()
+        print("Main admin Shahadat created")
 
 
-@app.route("/", methods=["GET", "POST"])
-def login():
+@app.before_request
+def before_request_func():
+    if not hasattr(app, 'db_initialized'):
+        create_db()
+        app.db_initialized = True
 
-    if request.method == "POST":
+# ============================
+# Helper functions
+# ============================
+def get_total_deposit(user_id=None):
+    query = Deposit.query
+    if user_id:
+        query = query.filter_by(user_id=user_id)
+    total = sum([d.amount for d in query.all()])
+    return total
 
-        username = request.form["username"]
-        password = request.form["password"]
+def get_total_meal(user_id=None):
+    query = Meal.query
+    if user_id:
+        query = query.filter_by(user_id=user_id)
+    total = sum([m.morning + m.lunch + m.dinner for m in query.all()])
+    return total
 
-        user = User.query.filter_by(username=username).first()
-
-        if user and check_password_hash(user.password, password):
-
-            login_user(user)
-
-            if user.role == "member":
-                return redirect("/member")
-            else:
-                return redirect("/admin")
-
-        else:
-            flash("Invalid login")
-
-    return render_template("login.html")
-
-
-@app.route("/logout")
-@login_required
-def logout():
-
-    logout_user()
-    return redirect("/")
-
-
-@app.route("/admin")
-@login_required
-def admin_dashboard():
-
-    if current_user.role == "member":
-        return redirect("/member")
-
-    users = User.query.all()
-    deposits = Deposit.query.all()
+def get_total_market_cost():
     markets = Market.query.filter_by(approved=True).all()
-
-    avg_rate = calculate_avg_meal_rate()
-
-    return render_template(
-        "admin_dashboard.html",
-        users=users,
-        deposits=deposits,
-        markets=markets,
-        avg_rate=avg_rate
-    )
-
-
-@app.route("/member")
-@login_required
-def member_dashboard():
-
-    data = member_summary(current_user.id)
-
-    notifications = Notification.query.filter_by(
-        user_id=current_user.id
-    ).all()
-
-    return render_template(
-        "member_dashboard.html",
-        data=data,
-        notifications=notifications
-    )
-
-
-@app.route("/add_member", methods=["GET", "POST"])
-@login_required
-def add_member():
-
-    if current_user.role not in ["admin", "super_admin"]:
-        return redirect("/")
-
-    if request.method == "POST":
-
-        name = request.form["name"]
-        username = request.form["username"]
-        password = generate_password_hash(request.form["password"])
-
-        new_user = User(
-            name=name,
-            username=username,
-            password=password,
-            role="member"
-        )
-
-        db.session.add(new_user)
-        db.session.commit()
-
-        flash("Member added successfully")
-
-        return redirect("/admin")
-
-    return render_template("add_member.html")
-
-
-@app.route("/add_deposit", methods=["GET", "POST"])
-@login_required
-def add_deposit():
-
-    if current_user.role not in ["admin", "super_admin"]:
-        return redirect("/")
-
-    users = User.query.all()
-
-    if request.method == "POST":
-
-        user_id = request.form["user_id"]
-        amount = float(request.form["amount"])
-
-        d = Deposit(
-            user_id=user_id,
-            amount=amount
-        )
-
-        db.session.add(d)
-        db.session.commit()
-
-        send_notification(user_id, f"আপনার নামে {amount} টাকা ডিপোজিট যোগ হয়েছে")
-
-        flash("Deposit added")
-
-        return redirect("/admin")
-
-    return render_template("add_deposit.html", users=users)
-
-
-@app.route("/auto_meal", methods=["GET", "POST"])
-@login_required
-def auto_meal():
-
-    if current_user.role not in ["admin", "super_admin"]:
-        return redirect("/")
-
-    users = User.query.filter_by(role="member").all()
-
-    if request.method == "POST":
-
-        today = date.today()
-
-        for u in users:
-
-            breakfast = 0.2 if request.form.get(f"b_{u.id}") else 0
-            lunch = 0.4 if request.form.get(f"l_{u.id}") else 0
-            dinner = 0.4 if request.form.get(f"d_{u.id}") else 0
-
-            total = breakfast + lunch + dinner
-
-            meal = Meal(
-                user_id=u.id,
-                date=today,
-                breakfast=breakfast,
-                lunch=lunch,
-                dinner=dinner,
-                total=total
-            )
-
-            db.session.add(meal)
-
-        db.session.commit()
-
-        flash("Meals saved successfully")
-
-        return redirect("/admin")
-
-    return render_template("auto_meal.html", users=users)
-    # -------------------------------
-# 1️⃣ Notification Function
-# -------------------------------
-
-def send_notification(user_id, message):
-
-    n = Notification(
-        user_id=user_id,
-        message=message,
-        date=datetime.utcnow()
-    )
-
-    db.session.add(n)
-    db.session.commit()
-
-
-# -------------------------------
-# 2️⃣ Market Entry (Member)
-# -------------------------------
-
-@app.route("/market_entry", methods=["GET","POST"])
-@login_required
-def market_entry():
-
-    if request.method == "POST":
-
-        m = Market(
-            date=date.today(),
-            buyer_id=current_user.id,
-            market_list=request.form["list"],
-            cost=float(request.form["cost"]),
-            approved=False
-        )
-
-        db.session.add(m)
-        db.session.commit()
-
-        flash("Market request sent")
-        send_notification(current_user.id,"আপনার বাজার এন্ট্রি পাঠানো হয়েছে।")
-        return redirect("/member")
-
-    return render_template("market_entry.html")
-
-
-# -------------------------------
-# 3️⃣ Market Approve / Reject (Admin)
-# -------------------------------
-
-@app.route("/market_approve/<id>")
-@login_required
-def market_approve(id):
-
-    if current_user.role not in ["admin","super_admin"]:
-        return redirect("/")
-
-    m = Market.query.get(id)
-    m.approved = True
-    db.session.commit()
-
-    send_notification(m.buyer_id,"আপনার বাজার এন্ট্রি এপ্রুভ হয়েছে")
-    return redirect("/admin")
-
-
-@app.route("/market_reject/<id>")
-@login_required
-def market_reject(id):
-
-    if current_user.role not in ["admin","super_admin"]:
-        return redirect("/")
-
-    m = Market.query.get(id)
-    db.session.delete(m)
-    db.session.commit()
-
-    send_notification(m.buyer_id,"আপনার বাজার এন্ট্রি রিজেক্ট হয়েছে")
-    return redirect("/admin")
-
-
-# -------------------------------
-# 4️⃣ Extra Cost System (Admin)
-# -------------------------------
-
-@app.route("/add_extra", methods=["GET","POST"])
-@login_required
-def add_extra():
-
-    if current_user.role not in ["admin","super_admin"]:
-        return redirect("/")
-
-    if request.method == "POST":
-
-        e = ExtraCost(
-            category=request.form["category"],
-            amount=float(request.form["amount"])
-        )
-
-        db.session.add(e)
-        db.session.commit()
-
-        flash("Extra cost added")
-        return redirect("/admin")
-
-    return render_template("add_extra.html")
-
-
-# -------------------------------
-# 5️⃣ Meal Rate Calculation
-# -------------------------------
-
-def calculate_avg_meal_rate():
-
-    markets = Market.query.filter_by(approved=True).all()
-    meals = Meal.query.all()
-
-    total_market = sum(m.cost for m in markets)
-    total_meal = sum(m.total for m in meals)
-
+    return sum([m.total_cost for m in markets])
+
+def get_average_meal_rate():
+    total_cost = get_total_market_cost()
+    total_meal = get_total_meal()
     if total_meal == 0:
         return 0
+    return round(total_cost / total_meal, 2)
 
-    return round(total_market / total_meal,2)
+def get_extra_total(user_id=None):
+    extras = Extra.query.all()
+    total_extra = sum([e.amount for e in extras])
+    return total_extra
+    # ============================
+# ROUTES
+# ============================
 
+@app.route('/')
+def home():
+    return redirect(url_for('login'))
 
-# -------------------------------
-# 6️⃣ Member Summary Engine
-# -------------------------------
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password, password):
+            session['user_id'] = user.id
+            session['role'] = user.role
+            flash("Login successful", "success")
+            if user.role == "admin":
+                return redirect(url_for('admin_dashboard'))
+            else:
+                return redirect(url_for('member_dashboard'))
+        else:
+            flash("Invalid credentials", "error")
+    return render_template('login.html')
 
-def member_summary(user_id):
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
-    deposits = Deposit.query.filter_by(user_id=user_id).all()
-    meals = Meal.query.filter_by(user_id=user_id).all()
-    markets = Market.query.filter_by(approved=True).all()
-    extras = ExtraCost.query.all()
+# ============================
+# Admin Dashboard
+# ============================
+@app.route('/admin')
+def admin_dashboard():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    total_deposit = get_total_deposit()
+    total_meal = get_total_meal()
+    average_rate = get_average_meal_rate()
+    total_market = get_total_market_cost()
+    total_extra = get_extra_total()
+    balance = total_deposit - total_market - total_extra
+    return render_template('admin_dashboard.html',
+                           total_deposit=total_deposit,
+                           total_meal=total_meal,
+                           average_rate=average_rate,
+                           total_market=total_market,
+                           total_extra=total_extra,
+                           balance=balance)
 
-    total_deposit = sum(d.amount for d in deposits)
-    total_meal = sum(m.total for m in meals)
-    total_market = sum(m.cost for m in markets)
+# ============================
+# Member Dashboard
+# ============================
+@app.route('/member')
+def member_dashboard():
+    if 'role' not in session or session['role'] != 'member':
+        return redirect(url_for('login'))
+    user_id = session['user_id']
+    total_deposit = get_total_deposit(user_id)
+    total_meal = get_total_meal(user_id)
+    average_rate = get_average_meal_rate()
+    total_market = get_total_market_cost()
+    total_extra = get_extra_total()
+    balance = total_deposit - (total_market + total_extra)
+    return render_template('member_dashboard.html',
+                           total_deposit=total_deposit,
+                           total_meal=total_meal,
+                           average_rate=average_rate,
+                           total_market=total_market,
+                           total_extra=total_extra,
+                           balance=balance)
 
-    total_all_meal = sum(m.total for m in Meal.query.all())
-    avg_rate = 0
-    if total_all_meal > 0:
-        avg_rate = total_market / total_all_meal
+# ============================
+# Deposit Route
+# ============================
+@app.route('/deposit', methods=['POST'])
+def add_deposit():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    user_id = int(request.form['user_id'])
+    amount = float(request.form['amount'])
+    deposit = Deposit(user_id=user_id, amount=amount)
+    db.session.add(deposit)
+    db.session.commit()
+    flash("Deposit added successfully", "success")
+    return redirect(url_for('admin_dashboard'))
 
-    meal_cost = total_meal * avg_rate
-    extra_total = sum(e.amount for e in extras)
-    member_count = User.query.filter_by(role="member").count()
+# ============================
+# Meal Route
+# ============================
+@app.route('/meal', methods=['POST'])
+def add_meal():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    user_id = int(request.form['user_id'])
+    date_str = request.form['date']
+    morning = float(request.form.get('morning', 0.2))
+    lunch = float(request.form.get('lunch', 0.4))
+    dinner = float(request.form.get('dinner', 0.4))
+    date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+    meal = Meal(user_id=user_id, date=date_obj, morning=morning, lunch=lunch, dinner=dinner)
+    db.session.add(meal)
+    db.session.commit()
+    flash("Meal updated successfully", "success")
+    return redirect(url_for('admin_dashboard'))
 
-    extra_per_member = 0
-    if member_count > 0:
-        extra_per_member = extra_total / member_count
+# ============================
+# Market Route
+# ============================
+@app.route('/market', methods=['POST'])
+def add_market():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    user_id = int(request.form['user_id'])
+    date_str = request.form['date']
+    item_list = request.form['item_list']
+    total_cost = float(request.form['total_cost'])
+    date_obj = datetime.strptime(date_str, '%Y-%m-%d').date()
+    market = Market(user_id=user_id, date=date_obj, item_list=item_list, total_cost=total_cost)
+    db.session.add(market)
+    db.session.commit()
+    flash("Market entry added", "success")
+    return redirect(url_for('admin_dashboard'))
 
-    total_cost = meal_cost + extra_per_member
-    balance = total_deposit - total_cost
+@app.route('/market/approve/<int:id>')
+def approve_market(id):
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    market = Market.query.get(id)
+    market.approved = True
+    db.session.commit()
+    flash("Market approved", "success")
+    return redirect(url_for('admin_dashboard'))
 
-    return {
-        "deposit":round(total_deposit,2),
-        "meal":round(total_meal,2),
-        "avg_rate":round(avg_rate,2),
-        "meal_cost":round(meal_cost,2),
-        "extra":round(extra_per_member,2),
-        "total_cost":round(total_cost,2),
-        "balance":round(balance,2)
-    }
+# ============================
+# Extra Cost Route
+# ============================
+@app.route('/extra', methods=['POST'])
+def add_extra():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    category = request.form['category']
+    amount = float(request.form['amount'])
+    extra = Extra(category=category, amount=amount)
+    db.session.add(extra)
+    db.session.commit()
+    flash("Extra cost added", "success")
+    return redirect(url_for('admin_dashboard'))
 
+# ============================
+# Auto Meal Generation (if needed)
+# ============================
+@app.route('/auto_meal', methods=['GET','POST'])
+def auto_meal():
+    if 'role' not in session or session['role'] != 'admin':
+        return redirect(url_for('login'))
+    today = datetime.today().date()
+    users = User.query.all()
+    for user in users:
+        existing = Meal.query.filter_by(user_id=user.id, date=today).first()
+        if not existing:
+            meal = Meal(user_id=user.id, date=today)
+            db.session.add(meal)
+    db.session.commit()
+    flash("Auto meal sheet generated", "success")
+    return redirect(url_for('admin_dashboard'))
 
-# -------------------------------
-# 7️⃣ Excel Export
-# -------------------------------
-
-@app.route("/export_excel")
-@login_required
-def export_excel():
-
-    if current_user.role not in ["admin","super_admin"]:
-        return redirect("/")
-
-    users = User.query.filter_by(role="member").all()
-    data = []
-
-    for u in users:
-
-        s = member_summary(u.id)
-        data.append({
-            "Name": u.name,
-            "Deposit": s["deposit"],
-            "Meal": s["meal"],
-            "Meal Cost": s["meal_cost"],
-            "Extra Cost": s["extra"],
-            "Total Cost": s["total_cost"],
-            "Balance": s["balance"]
-        })
-
-    df = pd.DataFrame(data)
-    file = "mess_summary.xlsx"
-    df.to_excel(file,index=False)
-
-    return send_file(file, as_attachment=True)
-
-
-# -------------------------------
-# 8️⃣ Run App
-# -------------------------------
-
+# ============================
+# Run App
+# ============================
 if __name__ == "__main__":
-
-    app.run(debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
