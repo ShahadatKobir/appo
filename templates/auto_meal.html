@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Meal Sheet - Master Niloy Mess</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #3498db;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        header a {
+            color: white;
+            text-decoration: underline;
+            float: right;
+        }
+        .container {
+            padding: 20px;
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: center;
+        }
+        th {
+            background: #2980b9;
+            color: white;
+        }
+        button {
+            padding: 10px 15px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #1e8449;
+        }
+        input[type="checkbox"] {
+            transform: scale(1.3);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Auto Meal Sheet - Master Niloy Mess</h1>
+        <a href="/admin">Back to Dashboard</a>
+    </header>
+
+    <div class="container">
+        <form method="POST">
+            <table>
+                <tr>
+                    <th>Name</th>
+                    <th>Breakfast (0.2)</th>
+                    <th>Lunch (0.4)</th>
+                    <th>Dinner (0.4)</th>
+                </tr>
+                {% for u in users %}
+                <tr>
+                    <td>{{ u.name }}</td>
+                    <td><input type="checkbox" name="b_{{u.id}}" checked></td>
+                    <td><input type="checkbox" name="l_{{u.id}}" checked></td>
+                    <td><input type="checkbox" name="d_{{u.id}}" checked></td>
+                </tr>
+                {% endfor %}
+            </table>
+            <button type="submit">Save Meals</button>
+        </form>
+    </div>
+</body>
+</html>

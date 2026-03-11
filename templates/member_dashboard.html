@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Member Dashboard - Master Niloy Mess</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #3498db;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        header a {
+            color: white;
+            text-decoration: underline;
+            float: right;
+        }
+        .container {
+            padding: 20px;
+        }
+        .card {
+            background: white;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            box-shadow: 0px 0px 10px rgba(0,0,0,0.05);
+        }
+        .negative {
+            color: red;
+            font-weight: bold;
+        }
+        .positive {
+            color: green;
+            font-weight: bold;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        table, th, td {
+            border: 1px solid #ccc;
+        }
+        th, td {
+            padding: 10px;
+            text-align: center;
+        }
+        th {
+            background: #2980b9;
+            color: white;
+        }
+        button {
+            padding: 8px 12px;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #1e8449;
+        }
+        .notification {
+            background: #f39c12;
+            color: white;
+            padding: 8px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Master Niloy Mess - Member Dashboard</h1>
+        <a href="/logout">Logout</a>
+    </header>
+
+    <div class="container">
+
+        <h2>Your Summary</h2>
+        <div class="card">
+            <p>Deposit: {{ data.deposit }} টাকা</p>
+            <p>Total Meal: {{ data.meal }}</p>
+            <p>Average Meal Rate: {{ data.avg_rate }}</p>
+            <p>Meal Cost: {{ data.meal_cost }}</p>
+            <p>Extra Cost: {{ data.extra }}</p>
+            <p>Total Cost: {{ data.total_cost }}</p>
+            {% if data.balance < 0 %}
+                <p class="negative">Balance: {{ data.balance }} - দ্রুত মিলে টাকা প্রদান করুন, নাহলে আপনার মিল বন্ধ হয়ে যাবে</p>
+            {% else %}
+                <p class="positive">Balance: {{ data.balance }} - এই টাকা দিয়ে আনুমানিক {{ (data.balance/data.avg_rate)|round(0) }} দিন মিল চলবে</p>
+            {% endif %}
+        </div>
+
+        <h2>Notifications</h2>
+        {% for n in notifications %}
+            <div class="notification">{{ n.message }}</div>
+        {% else %}
+            <p>No notifications</p>
+        {% endfor %}
+
+        <h2>Market Entry (if assigned)</h2>
+        <a href="/market_entry"><button>Add Today Market</button></a>
+
+        <h2>Meal Request / Auto Meal</h2>
+        <a href="/auto_meal"><button>Auto Meal Sheet</button></a>
+
+    </div>
+</body>
+</html>
